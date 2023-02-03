@@ -1,48 +1,3 @@
-/******************************************************************************
-*
-* Copyright (C) 2014 - 2018 Xilinx, Inc.  All rights reserved.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-*
-*
-*
-******************************************************************************/
-/*****************************************************************************/
-/**
- *
- * @file vdma.c
- *
- * This file comprises sample application to  usage of VDMA APi's in vdma_api.c.
- *  .
- *
- * MODIFICATION HISTORY:
- *
- * Ver   Who  Date     Changes
- * ----- ---- -------- -------------------------------------------------------
- * 4.0   adk  11/26/15 First release
- * 4.1   adk  01/07/16 Updated DDR base address for Ultrascale (CR 799532) and
- *		       removed the defines for S6/V6.
- *       ms   04/05/17 Modified Comment lines in functions to
- *                     recognize it as documentation block for doxygen
- *                     generation of examples.
- ****************************************************************************/
-
 /*** Include file ***/
 #include "xparameters.h"
 #include "xstatus.h"
@@ -53,10 +8,11 @@
 #include "xil_io.h"
 #include <stdio.h>
 #include "xil_cache.h"
-#include "xsobel.h"
+#include "xrgb2gray.h"
 #include "ff.h"
 #include "bmp.h"
 #include "vdma_api.h"
+#include<stdlib.h>
 
 #define MEMORY_BASE		0x01000000
 
@@ -114,14 +70,14 @@ void img_unextract(unsigned char* ori_img,unsigned char* img,int h,int w){
 int main(){
 	int Status;
 	int image_size,h,w;
-	const char* input_image="lena384x256.bmp";
+	const char* input_image="lena289x289.bmp";
 	const char* output_image="out1.bmp";
 	BITMAPFILEHEADER bmp_file;
 	BITMAPINFOHEADER bmp_info;
 	FIL fil;
 	UINT bw;
 	XAxiVdma InstancePtr;
-    XSobel hls_sobel;
+    XRgb2gray hls_inst;
 	//disable dcache and init sd card
 	Xil_DCacheDisable();
 	SD_Init();
@@ -136,40 +92,43 @@ int main(){
     printf("biSizeImage=%d,biHeight=%d,biWidth=%d\n",image_size,h,w);
     //define buffer
     unsigned char* ori_image=(unsigned char*)malloc(image_size);
-    unsigned char* image=(unsigned char*)malloc(h*w*3);
-    unsigned char* image_expand=(unsigned char*)malloc(h*w*4);
-    unsigned char* image_sobel=(unsigned char*)malloc(h*w*3);
-    unsigned char* image_sobel_expand=(unsigned char*)malloc(image_size);
+    unsigned char* src_image=(unsigned char*)malloc(h*w*3);
+    unsigned char* src_image_expand=(unsigned char*)malloc(h*w*4);
+    unsigned char* dst_image=(unsigned char*)malloc(h*w*3);
+    unsigned char* dst_image_expand=(unsigned char*)malloc(image_size);
     //read image data
     f_lseek(&fil,bmp_file.bfOffBits);                                 //file pointer
     f_read(&fil,ori_image,bmp_info.biSizeImage,&bw);               //read image data
 	//preprocess
-    img_extract(ori_image,image,h,w);
-	img_expand(image,image_expand,h*w);
+    img_extract(ori_image,src_image,h,w);
+	img_expand(src_image,src_image_expand,h*w);
 	for(int i=0;i<h*w*4;i++){
-		Xil_Out8(srcBuffer+i,(u8)image_expand[i]);
+		Xil_Out8(srcBuffer+i,(u8)src_image_expand[i]);
 	}
-	//init and run sobel ip core
-	XSobel_Initialize(&hls_sobel,0);
-	XSobel_Set_rows(&hls_sobel, (u32)h);
-	XSobel_Set_cols(&hls_sobel, (u32)w);
-	XSobel_Start(&hls_sobel);
+	//init and run pl ip core
+	printf("start ip\n");
+	XRgb2gray_Initialize(&hls_inst,0);
+	XRgb2gray_Set_rows(&hls_inst, (u32)h);
+	XRgb2gray_Set_cols(&hls_inst, (u32)w);
+	XRgb2gray_Start(&hls_inst);
     //init and run axi vdma
+	printf("start vdma\n");
 	Status = run_vdma(&InstancePtr, 0, w, h, srcBuffer, destBuffer, 1, 0);
     //
 	if(Status != XST_SUCCESS) {
 		xil_printf("Transfer of frames failed with error = %d\r\n",Status);
 		return XST_FAILURE;
 	}
-	while(XSobel_IsDone(&hls_sobel));
+	while(XRgb2gray_IsDone(&hls_inst));
 	//
+	printf("computation done\n");
 	for(int i=0;i<h*w;i++){
 		u32 x=Xil_In32(destBuffer+i*4);
-		image_sobel[i*3+0]=x&0xff;
-		image_sobel[i*3+1]=(x>>8)&0xff;
-		image_sobel[i*3+2]=(x>>16)&0xff;
+		dst_image[i*3+0]=x&0xff;
+		dst_image[i*3+1]=(x>>8)&0xff;
+		dst_image[i*3+2]=(x>>16)&0xff;
     }
-    img_unextract(image_sobel,image_sobel_expand,h,w);
+    img_unextract(dst_image,dst_image_expand,h,w);
     //****************************************write sobel image to sd card**************************************************
     //set bmp_file
     bmp_file.bfType=0x4d42;
@@ -193,13 +152,14 @@ int main(){
     f_open(&fil,output_image,FA_CREATE_ALWAYS | FA_WRITE);
     f_write(&fil,&bmp_file,14,&bw);
     f_write(&fil,&bmp_info,40,&bw);
-    f_write(&fil,image_sobel_expand,bmp_info.biSizeImage,&bw);
+    f_write(&fil,dst_image_expand,bmp_info.biSizeImage,&bw);
     f_close(&fil);
+    printf("save image done\n");
     //free
 	free(ori_image);
-	free(image);
-	free(image_expand);
-	free(image_sobel);
-	free(image_sobel_expand);
+	free(src_image);
+	free(src_image_expand);
+	free(dst_image);
+	free(dst_image_expand);
     return 0;
 }
